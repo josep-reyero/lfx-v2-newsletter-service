@@ -1,0 +1,33 @@
+# Throwaway diagnostic: prove whether the Codex sandbox-init failure on
+# ubuntu-24.04 is the unprivileged-userns AppArmor restriction, and whether
+# relaxing the sysctl fixes bubblewrap. No Codex, no API key, no token cost.
+---
+name: Sandbox Diagnostic
+
+"on":
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  bwrap:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Probe userns restriction and bubblewrap
+        run: |
+          echo "=== OS ==="
+          . /etc/os-release; echo "$PRETTY_NAME"; uname -r
+          echo "=== apparmor_restrict_unprivileged_userns sysctl ==="
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>&1 || echo "(not present)"
+          echo "=== install system bubblewrap ==="
+          sudo apt-get update -qq && sudo apt-get install -y bubblewrap >/dev/null
+          which bwrap; bwrap --version
+          echo "=== bwrap BEFORE relax (run a trivial command in a namespace) ==="
+          set +e
+          bwrap --ro-bind / / --dev /dev --proc /proc -- /bin/true
+          echo "bwrap exit BEFORE = $?"
+          echo "=== relax the restriction ==="
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "=== bwrap AFTER relax ==="
+          bwrap --ro-bind / / --dev /dev --proc /proc -- /bin/true
+          echo "bwrap exit AFTER = $?"
