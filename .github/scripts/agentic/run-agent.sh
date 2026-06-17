@@ -27,9 +27,35 @@ AGENT_DIR="$REPO_ROOT/agents/$AGENT"
 
 EFFORT="${CODEX_EFFORT:-xhigh}"
 
+# Authenticate Codex. In CI there is no ChatGPT session, so setting
+# OPENAI_API_KEY alone is not enough: Codex only sends credentials once a login
+# has written ~/.codex/auth.json. Log in from the key when it is present. Locally
+# (key unset) we rely on an existing `codex login` session instead.
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+  if ! printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key >/dev/null 2>&1; then
+    echo "ERROR: 'codex login --with-api-key' failed (bad or unset OPENAI_API_KEY?)" >&2
+    exit 1
+  fi
+fi
+
+# Capture the full Codex transcript to a file (it is verbose and the verdict we
+# care about is written separately via --output-last-message). On failure, the
+# transcript holds the only diagnostic (auth, model access, sandbox), so surface
+# its tail to stderr instead of leaving CI with a bare "exit code 1".
+set +e
 codex exec \
   --cd "$AGENT_DIR" \
   --sandbox workspace-write \
   -c model_reasoning_effort="$EFFORT" \
   --output-last-message "$OUT" \
   - < "$BRIEF" > "$OUT.transcript.log" 2>&1
+rc=$?
+set -e
+
+if [ "$rc" -ne 0 ]; then
+  echo "ERROR: codex exec failed (exit $rc) for agent '$AGENT'." >&2
+  echo "--- transcript tail (last 60 lines) ---" >&2
+  tail -n 60 "$OUT.transcript.log" >&2 || true
+  echo "--- end transcript tail ---" >&2
+  exit "$rc"
+fi

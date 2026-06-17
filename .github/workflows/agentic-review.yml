@@ -67,6 +67,14 @@ jobs:
         if: steps.key.outputs.present == 'true'
         run: npm install -g @openai/codex
 
+      # Codex runs the agent's shell tools under a workspace-write sandbox that
+      # needs bubblewrap on Linux. Without it every command the agent runs,
+      # including the git diff it reads the change from, fails and the agent
+      # reviews blind from PR metadata. Install it so the agent sees the diff.
+      - name: Install Codex sandbox deps (bubblewrap)
+        if: steps.key.outputs.present == 'true'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
       - name: Install central LFX skills (best effort)
         if: steps.key.outputs.present == 'true'
         continue-on-error: true
@@ -152,6 +160,14 @@ jobs:
       - name: Install Codex CLI
         if: steps.key.outputs.present == 'true'
         run: npm install -g @openai/codex
+
+      # Codex runs the agent's shell tools under a workspace-write sandbox that
+      # needs bubblewrap on Linux. Without it every command the agent runs,
+      # including the git diff it reads the change from, fails and the agent
+      # reviews blind from PR metadata. Install it so the agent sees the diff.
+      - name: Install Codex sandbox deps (bubblewrap)
+        if: steps.key.outputs.present == 'true'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
       - name: Install central LFX skills (best effort)
         if: steps.key.outputs.present == 'true'
