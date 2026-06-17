@@ -31,7 +31,12 @@ needs_human="$(jq -r '."needs-human" // false' <<<"$verdict_json")"
 reason="$(jq -r '.reason // ""' <<<"$verdict_json" | ag_strip_markers)"
 
 if [ "$needs_human" != "true" ]; then
-  ag_log "needs-human=false: no-op (the label is never removed by the judge)"
+  # No label change (the judge never removes it), but record why it declined to
+  # escalate, so the decision is auditable in the run summary.
+  ag_log "needs-human=false: ${reason:-<no reason given>}"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf 'Escalation judge: needs-human=false. %s\n' "${reason:-<no reason given>}" >> "$GITHUB_STEP_SUMMARY"
+  fi
   exit 0
 fi
 

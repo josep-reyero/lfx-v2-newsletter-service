@@ -52,9 +52,18 @@ summary="$(jq -r '.summary // ""' <<<"$findings_json")"
 
 # reconcile verdicts as JSONL of {tid, status}
 recon="$TMP/recon.jsonl"
-jq -c '(.reconcile // [])[]? | {tid: (.tid // ""), status: (.status // "")}' \
+jq -c '(.reconcile // [])[]? | {tid: (.tid // ""), status: (.status // ""), note: (.note // "")}' \
   <<<"$findings_json" >"$recon"
 verdict_of() { jq -r --arg tid "$1" 'select(.tid==$tid) | .status' "$recon" 2>/dev/null | head -1; }
+note_of()    { jq -r --arg tid "$1" 'select(.tid==$tid) | .note'   "$recon" 2>/dev/null | head -1; }
+
+# Collapse a finding to a single trimmed line for the summary's blocking list.
+oneline() { printf '%s' "$1" | tr '\n' ' ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//' | cut -c1-180; }
+loc() { if [ "${2:-0}" -gt 0 ] 2>/dev/null; then printf '%s:%s' "$1" "$2"; else printf '%s' "$1"; fi; }
+
+# Accumulates the actionable "still blocking" list rendered into the summary, so
+# a developer sees exactly what to fix even when a thread was resolved manually.
+blocking_md="$TMP/blocking.md"; : >"$blocking_md"
 
 # prior threads we own (from fetch-state.sh)
 threads="$TMP/threads.jsonl"; : >"$threads"
@@ -84,12 +93,20 @@ while IFS= read -r th; do
   tid="$(jq -r '.tid' <<<"$th")"
   sev="$(jq -r '.sev' <<<"$th")"
   ag_is_blocking "$sev" || continue
-  case "$(verdict_of "$tid")" in
-    fixed) : ;;   # agent confirms it is fixed: not live
-    not-fixed) live_existing_blocking=$((live_existing_blocking + 1)) ;;
-    *) ag_log "no verdict for blocking thread $tid; treating as not-fixed (fail closed)"
-       live_existing_blocking=$((live_existing_blocking + 1)) ;;
-  esac
+  status="$(verdict_of "$tid")"
+  [ "$status" = "fixed" ] && continue   # agent confirms it is fixed: not live
+  [ "$status" = "not-fixed" ] || ag_log "no verdict for blocking thread $tid; treating as not-fixed (fail closed)"
+  live_existing_blocking=$((live_existing_blocking + 1))
+  # Record it in the actionable list. Flag threads a human resolved, since their
+  # green checkmark hides that the issue is still live, and fold in any related
+  # note the agent attached instead of opening a near-duplicate thread.
+  file="$(jq -r '.file // ""' <<<"$th")"; line="$(jq -r '.line // 0' <<<"$th")"
+  comment="$(jq -r '.comment // ""' <<<"$th")"; note="$(note_of "$tid")"
+  tag=""; [ "$(jq -r '.isResolved' <<<"$th")" = "true" ] && tag=' _(you resolved this thread, but the issue is still present)_'
+  # Backticks below are literal Markdown around the location, not expansion.
+  # shellcheck disable=SC2016
+  printf -- '- **[%s]** `%s` — %s%s\n' "$sev" "$(loc "$file" "$line")" "$(oneline "$comment")" "$tag" >>"$blocking_md"
+  { [ -n "$note" ] && [ "$note" != "null" ]; } && printf -- '  - also: %s\n' "$(oneline "$note")" >>"$blocking_md"
 done <"$threads"
 
 # --- 3. Post new findings (each gets a fresh stable tid) -----------------------
@@ -106,7 +123,11 @@ while IFS= read -r f; do
   suggestion="$(jq -r '.suggestion // ""' <<<"$f" | ag_strip_markers)"
   tid="$(ag_new_tid)"
   body="$(render_body "$sev" "$comment" "$suggestion" "$tid")"
-  ag_is_blocking "$sev" && new_blocking=$((new_blocking + 1))
+  if ag_is_blocking "$sev"; then
+    new_blocking=$((new_blocking + 1))
+    # shellcheck disable=SC2016
+    printf -- '- **[%s]** `%s` — %s\n' "$sev" "$(loc "$file" "$line")" "$(oneline "$comment")" >>"$blocking_md"
+  fi
   if [ "$line" -gt 0 ]; then
     jq -nc --arg path "$file" --argjson line "$line" --arg body "$body" \
       '{path:$path, line:$line, side:"RIGHT", body:$body}' >>"$new_inline"
@@ -151,11 +172,15 @@ summary_file="$TMP/summary.md"
   [ -n "$summary" ] && printf '%s\n\n' "$summary"
   # Literal Markdown backticks around the SHA, not shell expansion.
   # shellcheck disable=SC2016
-  printf '%s live blocking issue(s) on `%s`. ' "$total_blocking" "${HEAD_SHA:-head}"
+  printf '%s blocking issue(s) on `%s`. ' "$total_blocking" "${HEAD_SHA:-head}"
   if [ "$clean" = true ]; then
     printf 'No blocking issues remain.\n'
   else
-    printf 'Fix these in the code; the agentic-review/clean status turns green once the reviewer confirms each is fixed.\n'
+    printf 'Fix these in the code; the agentic-review/clean status turns green only once the reviewer confirms each is fixed. Resolving a thread does not clear a still-present issue.\n'
+  fi
+  if [ -s "$blocking_md" ]; then
+    printf '\n**Still blocking:**\n\n'
+    cat "$blocking_md"
   fi
   if [ -s "$unanchored" ]; then
     printf '\n**Findings not anchored to a diff line:**\n\n'

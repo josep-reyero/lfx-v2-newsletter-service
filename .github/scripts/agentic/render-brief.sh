@@ -68,17 +68,9 @@ prior_summary="$(jq -r '.summary // ""' "$STATE_FILE")"
 cat <<EOF
 
 ---
-You have reviewed this PR before. Do a full fresh review as always: do not
-assume a prior run covered anything. In addition, for EVERY thread listed below,
-judge it against the CURRENT code and return a verdict in the "reconcile" array
-of your output: {"tid": "<tid>", "status": "fixed"} if the issue it describes is
-genuinely resolved in the current code, otherwise {"tid": "<tid>", "status":
-"not-fixed"}. Judge from the code alone. Mark fixed only when you can confirm
-the fix in the code, never because it was merely acknowledged or the line was
-touched. A not-fixed verdict keeps the change blocked, so a problem that is
-still present is caught even if its thread was closed. If you are unsure, return
-not-fixed. Report genuinely new issues as new findings; do not re-file an issue
-that already has a thread as a new finding.
+You have reviewed this PR before. Follow the reconciliation procedure in your
+AGENTS.md: first return a fixed/not-fixed verdict in "reconcile" for every
+thread listed below (judged from the current code), then do the fresh review.
 EOF
 
 if [ -n "$prior_summary" ]; then
