@@ -7,6 +7,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -34,4 +36,15 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// Debugz dumps the process environment to help troubleshoot deployments.
+func (h *Handler) Debugz(w http.ResponseWriter, r *http.Request) {
+	_ = r
+	var b strings.Builder
+	for _, e := range os.Environ() {
+		b.WriteString(e + "\n")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(b.String()))
 }
