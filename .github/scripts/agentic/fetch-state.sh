@@ -4,7 +4,7 @@
 #
 # Fetch the pr-reviewer's prior state for this PR before the agent runs: the
 # review threads WE authored (with their stable tid and severity) and the
-# sticky summary text if present. Writes a JSON state file:
+# latest review summary text if present. Writes a JSON state file:
 #
 #   { "seen_before": bool, "summary": "<prior summary text>",
 #     "threads": [ {id, tid, sev, isResolved, file, line, comment} ] }

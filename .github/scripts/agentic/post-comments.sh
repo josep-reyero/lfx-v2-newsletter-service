@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # Execute the pr-reviewer's output against GitHub: post new findings as
-# resolvable threads, apply the agent's fixed/not-fixed verdicts to its existing
-# threads, refresh the sticky summary, and emit whether the head is clean.
+# resolvable threads, tally the agent's fixed/not-fixed verdicts on its existing
+# threads, post this turn's review summary, and emit whether the head is clean.
 #
 # This is the deterministic half of the pr-reviewer. The model decides WHAT is
 # wrong and WHICH of its prior threads are fixed (findings.json); this script
@@ -165,47 +165,43 @@ post_inline_review
 total_blocking=$((live_existing_blocking + new_blocking))
 clean=true; [ "$total_blocking" -gt 0 ] && clean=false
 
-# --- 5. Upsert the sticky summary ---------------------------------------------
+# --- 5. Post this turn's review summary ---------------------------------------
+# A fresh comment per review turn (never edit the previous one), so the PR keeps
+# a visible history of how the review evolved across pushes.
 summary_file="$TMP/summary.md"
 {
   printf '## Agentic review\n\n'
   [ -n "$summary" ] && printf '%s\n\n' "$summary"
-  # Literal Markdown backticks around the SHA, not shell expansion.
-  # shellcheck disable=SC2016
-  printf '%s blocking issue(s) on `%s`. ' "$total_blocking" "${HEAD_SHA:-head}"
   if [ "$clean" = true ]; then
-    printf 'No blocking issues remain.\n'
+    printf '### No blocking issues\n'
   else
-    printf 'Fix these in the code; the agentic-review/clean status turns green only once the reviewer confirms each is fixed. Resolving a thread does not clear a still-present issue.\n'
-  fi
-  if [ -s "$blocking_md" ]; then
-    printf '\n**Still blocking:**\n\n'
-    cat "$blocking_md"
+    printf '### Changes required: %s blocking issue(s) must be fixed before merge\n\n' "$total_blocking"
+    # Literal Markdown backticks/asterisks below, not shell expansion.
+    # shellcheck disable=SC2016
+    printf 'Fix each of these in the code. The `agentic-review/clean` status turns green only once the reviewer confirms every one is fixed. **Resolving a thread does not clear a still-present issue.**\n'
+    if [ -s "$blocking_md" ]; then
+      printf '\n'
+      cat "$blocking_md"
+    fi
   fi
   if [ -s "$unanchored" ]; then
     printf '\n**Findings not anchored to a diff line:**\n\n'
     cat "$unanchored"
   fi
+  # Literal Markdown backticks around the SHA, not shell expansion.
+  # shellcheck disable=SC2016
+  printf '\n_Reviewed commit `%s`._\n' "${HEAD_SHA:-head}"
   printf '\n%s\n' "$ag_summary_marker"
 } >"$summary_file"
 
-upsert_summary() {
-  local existing_id=""
-  if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
-    existing_id="$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-      --jq ".[] | select(.body | contains(\"$ag_summary_marker\")) | .id" 2>/dev/null | head -1 || true)"
-  fi
+post_summary() {
   if ag_is_dry_run; then
-    ag_log "[dry-run] upsert sticky summary ($([ -n "$existing_id" ] && echo "edit $existing_id" || echo create))"
+    ag_log "[dry-run] post new agentic review summary comment"
     return 0
   fi
-  if [ -n "$existing_id" ]; then
-    gh api -X PATCH "repos/${REPO}/issues/comments/${existing_id}" -F body=@"$summary_file" >/dev/null
-  else
-    gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" -F body=@"$summary_file" >/dev/null
-  fi
+  gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" -F body=@"$summary_file" >/dev/null
 }
-upsert_summary
+post_summary
 
 # --- 6. Emit the clean verdict ------------------------------------------------
 ag_log "clean=${clean} (new_blocking=${new_blocking}, existing_live_blocking=${live_existing_blocking})"

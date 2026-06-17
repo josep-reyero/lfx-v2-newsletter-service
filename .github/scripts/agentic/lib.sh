@@ -94,7 +94,8 @@ ag_strip_markers() {
           s@agentic:id=[0-9a-f]*@@g'
 }
 
-# Marker for the single sticky summary comment (a PR-level issue comment).
+# Marker on each review summary comment (a fresh PR-level issue comment is posted
+# per review turn). Used to detect prior reviews and recover the latest summary.
 # shellcheck disable=SC2034
 ag_summary_marker='<!-- agentic:summary -->'
 
@@ -140,9 +141,10 @@ ag_fetch_owned_threads() {
     | {id, isResolved, path, line, body: (.comments.nodes[0].body // "")}'
 }
 
-# Print the sticky summary comment body we authored (stripped of markers), or
-# nothing if absent. Presence is the authoritative "this PR has been reviewed"
-# signal. Read-only; empty on no token or API error (treated as not-present).
+# Print the body of the LATEST review summary comment we authored (stripped of
+# markers), or nothing if none. A summary is posted per turn, so the most recent
+# is the one to show the agent. Presence is the authoritative "this PR has been
+# reviewed" signal. Read-only; empty on no token or API error (not-present).
 ag_summary_get() {
   local repo="$1" pr="$2" owner name raw
   owner="${repo%%/*}"; name="${repo#*/}"
@@ -156,10 +158,10 @@ ag_summary_get() {
         }
       }' \
       -F owner="$owner" -F name="$name" -F pr="$pr" 2>/dev/null)" || return 0
-  printf '%s' "$raw" | jq -r 'first(.data.repository.pullRequest.comments.nodes[]
+  printf '%s' "$raw" | jq -r '[.data.repository.pullRequest.comments.nodes[]
     | select(.viewerDidAuthor == true)
     | select(.body | contains("agentic:summary"))
-    | .body) // ""'
+    | .body] | last // ""'
 }
 
 # The bot deliberately never resolves or reopens review threads: GitHub thread
