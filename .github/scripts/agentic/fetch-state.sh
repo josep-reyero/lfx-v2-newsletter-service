@@ -46,11 +46,14 @@ while IFS= read -r t; do
   [ -z "$tid" ] && continue
   sev="$(printf '%s' "$body" | ag_sev_of)"
   resolved="$(jq -r '.isResolved' <<<"$t")"
-  # Pass resolved BLOCKING threads (so a fix that was only acknowledged gets
-  # reopened), but drop resolved nits: they never reopen and never block, so
-  # re-judging them is pure noise.
+  # Pass resolved BLOCKING threads (so a fix that was only acknowledged still
+  # blocks via the agent's not-fixed verdict), but drop resolved nits: they never
+  # block, so re-judging them is pure noise.
   if [ "$resolved" = "true" ] && ! ag_is_blocking "$sev"; then continue; fi
-  comment="$(printf '%s' "$body" | ag_strip_markers | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  # Strip both the agentic markers and the leading **[severity]** prefix so the
+  # recovered comment is the bare finding text (the summary re-adds the severity).
+  comment="$(printf '%s' "$body" | ag_strip_markers \
+    | sed -E 's/^[[:space:]]*\*\*\[[a-z-]+\]\*\*[[:space:]]*//; s/^[[:space:]]+//; s/[[:space:]]+$//')"
   jq -nc --argjson t "$t" --arg tid "$tid" --arg sev "$sev" --arg comment "$comment" \
     '{id: $t.id, tid: $tid, sev: $sev, isResolved: $t.isResolved,
       file: ($t.path // ""), line: ($t.line // 0), comment: $comment}' >>"$norm"
