@@ -73,7 +73,13 @@ jobs:
       # reviews blind from PR metadata. Install it so the agent sees the diff.
       - name: Install Codex sandbox deps (bubblewrap)
         if: steps.key.outputs.present == 'true'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # ubuntu-24.04 ships kernel.apparmor_restrict_unprivileged_userns=1,
+          # which blocks the unprivileged user namespace bubblewrap needs, so
+          # Codex's workspace-write sandbox fails to initialize and the agent
+          # cannot run the git diff it reviews from. Relax it for this runner.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Install central LFX skills (best effort)
         if: steps.key.outputs.present == 'true'
@@ -167,7 +173,13 @@ jobs:
       # reviews blind from PR metadata. Install it so the agent sees the diff.
       - name: Install Codex sandbox deps (bubblewrap)
         if: steps.key.outputs.present == 'true'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          # ubuntu-24.04 ships kernel.apparmor_restrict_unprivileged_userns=1,
+          # which blocks the unprivileged user namespace bubblewrap needs, so
+          # Codex's workspace-write sandbox fails to initialize and the agent
+          # cannot run the git diff it reviews from. Relax it for this runner.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Install central LFX skills (best effort)
         if: steps.key.outputs.present == 'true'
