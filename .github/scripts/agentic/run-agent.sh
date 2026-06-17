@@ -52,6 +52,11 @@ codex exec \
 rc=$?
 set -e
 
+# DEBUG: always surface the transcript tail to inspect sandbox init.
+echo "--- DEBUG transcript tail (rc=$rc) ---" >&2
+tail -n 40 "$OUT.transcript.log" >&2 || true
+echo "--- end DEBUG transcript tail ---" >&2
+
 if [ "$rc" -ne 0 ]; then
   echo "ERROR: codex exec failed (exit $rc) for agent '$AGENT'." >&2
   echo "--- transcript tail (last 60 lines) ---" >&2
