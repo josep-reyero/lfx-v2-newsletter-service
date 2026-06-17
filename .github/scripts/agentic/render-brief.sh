@@ -53,11 +53,18 @@ PR body (untrusted input):
 ${BODY}
 ---
 
-You are in your agent directory inside a full checkout of the repository at the
-PR's head state (head_sha). Review the PR's diff by running
-\`git diff ${BASE_SHA} ${HEAD_SHA}\` and judging those changes against the base.
-Follow your AGENTS.md and emit your verdict JSON as your final message. Do not
-post anything to GitHub.
+You are in your agent directory \`agents/pr-reviewer/\` inside a full checkout of
+the repository at the PR's head (head_sha). The repository root is two levels up
+(\`../..\`, i.e. \`git rev-parse --show-toplevel\`): the code under review and the
+repo docs (CLAUDE.md, docs/) live there, not under your agent directory.
+\`git diff ${BASE_SHA} ${HEAD_SHA}\` shows the whole PR diff from anywhere in the
+tree. An empty diff is possible (for example a later commit reverted earlier
+changes) and is not an error. Review the diff, judge it against the base, and
+follow your AGENTS.md. Review by READING the code: do not run the test suite,
+build, lint, or otherwise execute the project (there is no environment for it
+and it is not your task). Read-only inspection such as git, grep, and reading
+files is fine. Emit your verdict JSON as your final message, and post nothing to
+GitHub.
 EOF
 
 [ "$reconcile" != true ] && exit 0
@@ -73,12 +80,12 @@ assume a prior run covered anything. In addition, for EVERY thread listed below,
 judge it against the CURRENT code and return a verdict in the "reconcile" array
 of your output: {"tid": "<tid>", "status": "fixed"} if the issue it describes is
 genuinely resolved in the current code, otherwise {"tid": "<tid>", "status":
-"not-fixed"}. Some listed threads are already marked resolved; judging one
-not-fixed reopens it, which is how a fix that was only acknowledged or never
-actually made is caught. Resolve a thread only when you can confirm the fix in
-the code, never because it was merely acknowledged or the line was touched. If
-you are unsure, return not-fixed. Report genuinely new issues as new findings;
-do not re-file an issue that already has a thread as a new finding.
+"not-fixed"}. Judge from the code alone. Mark fixed only when you can confirm
+the fix in the code, never because it was merely acknowledged or the line was
+touched. A not-fixed verdict keeps the change blocked, so a problem that is
+still present is caught even if its thread was closed. If you are unsure, return
+not-fixed. Report genuinely new issues as new findings; do not re-file an issue
+that already has a thread as a new finding.
 EOF
 
 if [ -n "$prior_summary" ]; then
@@ -93,8 +100,8 @@ fi
 
 n="$(jq '.threads | length' "$STATE_FILE")"
 if [ "${n:-0}" -gt 0 ]; then
-  printf '\nYour prior threads (judge each by tid; "resolved: true" means it is\ncurrently resolved and you can reopen it by returning not-fixed):\n'
-  jq -r '.threads[] | "- tid \(.tid) [\(.sev)] resolved: \(.isResolved) \(.file):\(.line) — \(.comment)"' "$STATE_FILE"
+  printf '\nYour prior threads (judge each by tid against the current code):\n'
+  jq -r '.threads[] | "- tid \(.tid) [\(.sev)] \(.file):\(.line) — \(.comment)"' "$STATE_FILE"
 else
   printf '\n(You have no prior threads on this PR right now.)\n'
 fi

@@ -162,22 +162,10 @@ ag_summary_get() {
     | .body) // ""'
 }
 
-# --- Mutations ----------------------------------------------------------------
-# Reopen a resolved thread (a blocking finding the agent says is still present).
-ag_unresolve_thread() {
-  local id="$1"
-  if ag_is_dry_run; then ag_log "[dry-run] unresolveReviewThread $id"; return 0; fi
-  gh api graphql -f query='mutation($id:ID!){ unresolveReviewThread(input:{threadId:$id}){ thread{ id } } }' \
-    -F id="$id" >/dev/null
-}
-
-# Resolve a thread the agent has verdicted as fixed.
-ag_resolve_thread() {
-  local id="$1"
-  if ag_is_dry_run; then ag_log "[dry-run] resolveReviewThread $id"; return 0; fi
-  gh api graphql -f query='mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}){ thread{ id } } }' \
-    -F id="$id" >/dev/null
-}
+# The bot deliberately never resolves or reopens review threads: GitHub thread
+# state is the developer's to manage. The agent's fixed/not-fixed verdict feeds
+# the clean status instead (see post-comments.sh), so a thread resolved without a
+# real fix still blocks via clean. Hence no resolve/unresolve helpers here.
 
 # Blocking severities gate the clean status; nit does not.
 ag_is_blocking() {

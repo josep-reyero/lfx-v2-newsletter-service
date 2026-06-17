@@ -71,42 +71,25 @@ render_body() {
   printf '%s\n\n%s' "$out" "$(ag_pr_marker "$tid" "$sev")"
 }
 
-# --- 2. Apply verdicts to existing threads ------------------------------------
-# fixed -> resolve. not-fixed (blocking) -> reopen if resolved, and stays live.
-# omitted (blocking) -> leave as-is but count live (fail closed). Nits never
-# reopen and never block.
+# --- 2. Tally existing threads from the agent's verdicts ----------------------
+# The bot never resolves or reopens threads: GitHub thread state is the
+# developer's to manage. The agent's verdict only feeds clean. A blocking thread
+# stays live unless the agent explicitly verdicts it fixed; not-fixed, or no
+# verdict at all (fail closed), keeps the head not-clean. So a thread a human
+# resolved without a real fix still blocks, because clean comes from the verdict,
+# not from whether the thread looks resolved. Nits never block.
 live_existing_blocking=0
 while IFS= read -r th; do
   [ -z "$th" ] && continue
-  id="$(jq -r '.id' <<<"$th")"
   tid="$(jq -r '.tid' <<<"$th")"
   sev="$(jq -r '.sev' <<<"$th")"
-  resolved="$(jq -r '.isResolved' <<<"$th")"
-  status="$(verdict_of "$tid")"
-  blocking=false; ag_is_blocking "$sev" && blocking=true
-
-  if [ "$status" = "fixed" ]; then
-    if [ "$resolved" != "true" ]; then
-      ag_log "resolve (agent verdict: fixed): $tid"
-      ag_resolve_thread "$id"
-    fi
-  elif [ "$status" = "not-fixed" ]; then
-    if [ "$blocking" = true ]; then
-      if [ "$resolved" = "true" ]; then
-        ag_log "reopen (agent verdict: not-fixed, blocking): $tid"
-        ag_unresolve_thread "$id"
-      fi
-      live_existing_blocking=$((live_existing_blocking + 1))
-    fi
-    # nit not-fixed: never reopen, never block
-  else
-    # No verdict for this thread. Leave GitHub state alone, but a blocking thread
-    # the agent did not address keeps the head not-clean (fail closed).
-    if [ "$blocking" = true ]; then
-      ag_log "WARNING: no verdict for blocking thread $tid; treating as not-fixed"
-      live_existing_blocking=$((live_existing_blocking + 1))
-    fi
-  fi
+  ag_is_blocking "$sev" || continue
+  case "$(verdict_of "$tid")" in
+    fixed) : ;;   # agent confirms it is fixed: not live
+    not-fixed) live_existing_blocking=$((live_existing_blocking + 1)) ;;
+    *) ag_log "no verdict for blocking thread $tid; treating as not-fixed (fail closed)"
+       live_existing_blocking=$((live_existing_blocking + 1)) ;;
+  esac
 done <"$threads"
 
 # --- 3. Post new findings (each gets a fresh stable tid) -----------------------
@@ -172,7 +155,7 @@ summary_file="$TMP/summary.md"
   if [ "$clean" = true ]; then
     printf 'No blocking issues remain.\n'
   else
-    printf 'Resolve the threads above with real fixes to turn the agentic-review/clean status green.\n'
+    printf 'Fix these in the code; the agentic-review/clean status turns green once the reviewer confirms each is fixed.\n'
   fi
   if [ -s "$unanchored" ]; then
     printf '\n**Findings not anchored to a diff line:**\n\n'
