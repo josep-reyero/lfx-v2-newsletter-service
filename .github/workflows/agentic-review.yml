@@ -10,10 +10,12 @@
 # Untrusted PR text (title, body) is passed via env, never interpolated into a
 # run script, to avoid script injection.
 #
-# The two jobs share an identical prepare sequence (checkout, key check, install
-# Codex + skills, compute merge base, render brief) so both agents review the
-# SAME brief. Keep those steps in sync; a later shared-harness extraction
-# (architecture section 7) will dedupe them across repos.
+# The two jobs share an identical prepare sequence (checkout, key check, sandbox
+# deps, skills, compute merge base, render brief) so both agents review the SAME
+# brief, then each runs its agent through openai/codex-action (pinned). The
+# action installs Codex, holds the API key in a local proxy the agent process
+# never sees, and drops sudo before running. Keep the shared steps in sync; a
+# later shared-harness extraction (architecture section 7) will dedupe repos.
 ---
 name: Agentic Review
 
@@ -62,10 +64,6 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Install Codex CLI
-        if: steps.key.outputs.present == 'true'
-        run: npm install -g @openai/codex
 
       # Codex runs the agent's shell tools under a workspace-write sandbox that
       # needs bubblewrap on Linux. Without it every command the agent runs,
@@ -116,9 +114,15 @@ jobs:
 
       - name: Run pr-reviewer (Codex)
         if: steps.key.outputs.present == 'true'
-        run: |
-          ./.github/scripts/agentic/run-agent.sh \
-            pr-reviewer "$RUNNER_TEMP/findings.json" "$RUNNER_TEMP/brief.md"
+        uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1 # v1.8
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          working-directory: agents/pr-reviewer
+          prompt-file: ${{ runner.temp }}/brief.md
+          output-file: ${{ runner.temp }}/findings.json
+          model: gpt-5.5
+          effort: ${{ env.CODEX_EFFORT }}
+          sandbox: workspace-write
 
       - name: Post comments and reconcile threads
         id: review
@@ -162,10 +166,6 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Install Codex CLI
-        if: steps.key.outputs.present == 'true'
-        run: npm install -g @openai/codex
 
       # Codex runs the agent's shell tools under a workspace-write sandbox that
       # needs bubblewrap on Linux. Without it every command the agent runs,
@@ -213,9 +213,15 @@ jobs:
 
       - name: Run escalation judge (Codex)
         if: steps.key.outputs.present == 'true'
-        run: |
-          ./.github/scripts/agentic/run-agent.sh \
-            escalation-reviewer "$RUNNER_TEMP/escalation.json" "$RUNNER_TEMP/brief.md"
+        uses: openai/codex-action@e0fdf01220eb9a88167c4898839d273e3f2609d1 # v1.8
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          working-directory: agents/escalation-reviewer
+          prompt-file: ${{ runner.temp }}/brief.md
+          output-file: ${{ runner.temp }}/escalation.json
+          model: gpt-5.5
+          effort: ${{ env.CODEX_EFFORT }}
+          sandbox: workspace-write
 
       - name: Apply needs-human verdict
         if: steps.key.outputs.present == 'true'
