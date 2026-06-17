@@ -36,11 +36,22 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// Statusz reports readiness for dashboards.
+// Statusz reports readiness for dashboards: 200 if the database is reachable,
+// 503 otherwise. Same semantics as Readyz.
 func (h *Handler) Statusz(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("no db"))
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	_ = h.db.PingContext(ctx)
+	if err := h.db.PingContext(ctx); err != nil {
+		slog.WarnContext(r.Context(), "statusz: db ping failed", "error", err.Error())
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("db unavailable"))
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
