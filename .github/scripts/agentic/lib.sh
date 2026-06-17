@@ -53,65 +53,63 @@ ag_read_agent_json() {
   ag_die "could not parse JSON from $path"
 }
 
-# Collapse whitespace runs to single spaces and trim ends. Reads stdin.
-ag_normalize() {
-  tr '\t' ' ' | tr -s ' ' | sed -E 's/^ +//; s/ +$//'
-}
+# --- Thread identity ----------------------------------------------------------
+# A pr-reviewer thread carries a hidden marker in its first comment:
+#   <!-- agentic:pr-reviewer tid=<16 hex> sev=<severity> -->
+# The tid is minted ONCE when the thread is created and never recomputed, so it
+# is stable for the life of the thread regardless of code edits or rewording.
+# The role (pr-reviewer) routes ownership; the sev lets clean be computed
+# without re-parsing the body.
 
-# The code at file:line from the checked-out head, normalized. Empty for
-# file-level findings (line 0) or when the file/line is out of range.
-ag_snippet_at() {
-  local file="$1" line="$2"
-  case "$line" in ''|*[!0-9]*) line=0 ;; esac
-  if [ "$line" -gt 0 ] && [ -f "$file" ]; then
-    sed -n "${line}p" "$file" 2>/dev/null | ag_normalize
-  fi
-}
-
-# Stable fingerprint for a finding: hash of file + normalized snippet, NOT the
-# comment text, so the model rewording a finding between runs still matches the
-# same thread. When there is no usable snippet (file-level line 0, or a stale /
-# out-of-range line number), fall back to file + line so distinct unanchored
-# findings on one file stay distinct instead of all collapsing into one bucket.
-ag_fingerprint() {
-  local file="$1" line="$2" snip
-  case "$line" in ''|*[!0-9]*) line=0 ;; esac
-  snip="$(ag_snippet_at "$file" "$line")"
-  if [ -n "$snip" ]; then
-    printf '%s\n%s' "$file" "$snip" | shasum -a 256 | cut -c1-16
+# Mint a fresh random thread id (16 hex).
+ag_new_tid() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 8
   else
-    printf '%s\n%s' "$file" "$line" | shasum -a 256 | cut -c1-16
+    od -An -tx1 -N8 /dev/urandom | tr -d ' \n'
   fi
 }
 
-# Hidden marker embedded in each posted comment so later runs can recover the
-# fingerprint and reconcile threads.
-ag_marker() { printf '<!-- agentic:id=%s -->' "$1"; }
+# Render the marker for a new thread.
+ag_pr_marker() { printf '<!-- agentic:pr-reviewer tid=%s sev=%s -->' "$1" "$2"; }
 
-# Extract the fingerprint from a comment body, or empty if unmarked. Takes the
-# LAST marker: render_body appends the real marker last, and finding text is
-# stripped of any agentic markers before posting, so a spoofed marker in the
-# model's comment cannot win even if stripping is ever bypassed.
-ag_marker_of() {
-  grep -oE 'agentic:id=[0-9a-f]{16}' | tail -1 | cut -d= -f2
+# Extract tid / sev from a comment body, or empty if it carries no pr-reviewer
+# marker. Takes the LAST marker: the real marker is appended last and finding
+# text is stripped of markers before posting, so a spoofed marker cannot win.
+ag_tid_of() {
+  grep -oE 'agentic:pr-reviewer[[:space:]]+tid=[0-9a-f]{16}[[:space:]]+sev=[a-z-]+' \
+    | tail -1 | sed -E 's/.*tid=([0-9a-f]{16}).*/\1/'
+}
+ag_sev_of() {
+  grep -oE 'agentic:pr-reviewer[[:space:]]+tid=[0-9a-f]{16}[[:space:]]+sev=[a-z-]+' \
+    | tail -1 | sed -E 's/.*sev=([a-z-]+).*/\1/'
 }
 
 # Remove any agentic markers a model may have embedded in finding text, so it
-# cannot forge the fingerprint or summary marker. Reads stdin, writes stdout.
+# cannot forge a thread id or the summary marker. Reads stdin, writes stdout.
 ag_strip_markers() {
-  sed -E 's/<!--[[:space:]]*agentic:[^>]*-->//g; s/agentic:(id=[0-9a-f]*|summary)//g'
+  sed -E 's@<!--[[:space:]]*agentic:[^>]*-->@@g
+          s@agentic:pr-reviewer[[:space:]]+tid=[0-9a-f]*[[:space:]]+sev=[a-z-]*@@g
+          s@agentic:(summary|escalation)@@g
+          s@agentic:id=[0-9a-f]*@@g'
 }
 
-# Used by post-comments.sh after sourcing this file.
+# Marker for the single sticky summary comment (a PR-level issue comment).
 # shellcheck disable=SC2034
 ag_summary_marker='<!-- agentic:summary -->'
 
-# Fetch the PR's review threads as JSONL of {id, isResolved, body} (body is the
-# first comment, which carries our marker). Read-only, so it runs even in
-# dry-run when a token is present. With no token it yields nothing and succeeds
-# (the dry-run case). A real API failure returns non-zero so the caller fails
-# closed rather than mistaking an error for "this PR has no threads."
-ag_fetch_threads() {
+# --- Reading prior state (read-only) ------------------------------------------
+# Ownership is two-part and fails closed: a thread is the pr-reviewer's only if
+# its first comment was authored by us (viewerDidAuthor, GitHub-attested, a PR
+# author cannot forge it) AND carries a pr-reviewer marker (routing). Marker
+# presence alone is never trusted, since a PR author controls comment content.
+
+# Emit this PR's review threads that WE authored, as JSONL of
+# {id, isResolved, path, line, body}. The caller parses tid/sev from body and
+# drops any without a pr-reviewer marker. With no token it yields nothing and
+# succeeds (dry-run); a real API error returns non-zero so the caller fails
+# closed rather than mistaking an error for "no threads."
+ag_fetch_owned_threads() {
   local repo="$1" pr="$2" owner name raw total
   owner="${repo%%/*}"; name="${repo#*/}"
   [ -z "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ] && return 0
@@ -121,7 +119,10 @@ ag_fetch_threads() {
           pullRequest(number:$pr){
             reviewThreads(first:100){
               totalCount
-              nodes{ id isResolved comments(first:1){ nodes{ body } } }
+              nodes{
+                id isResolved path line
+                comments(first:1){ nodes{ body viewerDidAuthor } }
+              }
             }
           }
         }
@@ -135,10 +136,34 @@ ag_fetch_threads() {
     ag_log "WARNING: PR has ${total} review threads; only the first 100 are reconciled"
   fi
   printf '%s' "$raw" | jq -c '.data.repository.pullRequest.reviewThreads.nodes[]
-    | {id, isResolved, body: (.comments.nodes[0].body // "")}'
+    | select(.comments.nodes[0].viewerDidAuthor == true)
+    | {id, isResolved, path, line, body: (.comments.nodes[0].body // "")}'
 }
 
-# Reopen a resolved thread (a blocking issue the model still reports).
+# Print the sticky summary comment body we authored (stripped of markers), or
+# nothing if absent. Presence is the authoritative "this PR has been reviewed"
+# signal. Read-only; empty on no token or API error (treated as not-present).
+ag_summary_get() {
+  local repo="$1" pr="$2" owner name raw
+  owner="${repo%%/*}"; name="${repo#*/}"
+  [ -z "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ] && return 0
+  raw="$(gh api graphql \
+      -f query='query($owner:String!,$name:String!,$pr:Int!){
+        repository(owner:$owner,name:$name){
+          pullRequest(number:$pr){
+            comments(first:100){ nodes{ body viewerDidAuthor } }
+          }
+        }
+      }' \
+      -F owner="$owner" -F name="$name" -F pr="$pr" 2>/dev/null)" || return 0
+  printf '%s' "$raw" | jq -r 'first(.data.repository.pullRequest.comments.nodes[]
+    | select(.viewerDidAuthor == true)
+    | select(.body | contains("agentic:summary"))
+    | .body) // ""'
+}
+
+# --- Mutations ----------------------------------------------------------------
+# Reopen a resolved thread (a blocking finding the agent says is still present).
 ag_unresolve_thread() {
   local id="$1"
   if ag_is_dry_run; then ag_log "[dry-run] unresolveReviewThread $id"; return 0; fi
@@ -146,8 +171,7 @@ ag_unresolve_thread() {
     -F id="$id" >/dev/null
 }
 
-# Resolve a thread the model no longer reports (the issue is fixed); the agent
-# cleaning up after itself, since it re-derived that the finding is gone.
+# Resolve a thread the agent has verdicted as fixed.
 ag_resolve_thread() {
   local id="$1"
   if ag_is_dry_run; then ag_log "[dry-run] resolveReviewThread $id"; return 0; fi

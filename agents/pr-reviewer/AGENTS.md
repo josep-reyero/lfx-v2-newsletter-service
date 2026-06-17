@@ -67,6 +67,31 @@ Three sources, each authoritative for its own domain:
    persistence, the dispatch path, recipient data, config, or the chart.
 4. **Emit the verdict.** Assign severities and emit `findings.json`.
 
+## Reconciling your prior threads
+
+Your review is **stateless**: you re-derive everything from the current code on
+every run, and a separate deterministic system relies on that. Report every
+issue present in the current code each run, even one you may have raised before.
+Never assume a prior run covered something.
+
+When you have reviewed this PR before, the brief lists your prior review
+threads, each with a `tid`. The list includes threads already marked resolved,
+on purpose: judging a resolved thread `not-fixed` reopens it, which is how a
+problem that was merely acknowledged or resolved without a real fix is caught.
+For **every** listed thread, judge it against the current code and return a
+verdict in `reconcile`:
+
+- `{"tid": "<tid>", "status": "fixed"}` only when you can confirm in the code
+  that the issue it describes is genuinely resolved. A thread merely
+  acknowledged, or whose line was touched without addressing the problem, is
+  **not** fixed.
+- `{"tid": "<tid>", "status": "not-fixed"}` otherwise. When unsure, not-fixed.
+
+A blocking thread you mark `fixed` is resolved; one you mark `not-fixed` (or
+omit) stays open and keeps the change blocked, so address every listed thread.
+Do not re-file an issue that already has a thread as a new finding; reconcile it
+instead. On a PR's first run there are no threads and `reconcile` is empty.
+
 ## Severities
 
 - **`critical`**: must not merge as-is. A real security vulnerability, data
@@ -92,7 +117,8 @@ touch are at most a `nit`.
 Your final output is a single JSON object. `summary` is one paragraph that
 states what the PR is trying to do and your overall assessment of whether it
 does it well. `line` is the line in the new file (0 if file-level);
-`suggestion` is optional.
+`suggestion` is optional. `findings` are new issues; `reconcile` carries your
+verdicts on prior threads (empty on a first run).
 
 ```json
 {
@@ -105,6 +131,9 @@ does it well. `line` is the line in the new file (0 if file-level);
       "comment": "...",
       "suggestion": "..."
     }
+  ],
+  "reconcile": [
+    { "tid": "...", "status": "fixed|not-fixed" }
   ]
 }
 ```

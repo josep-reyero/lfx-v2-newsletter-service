@@ -15,24 +15,24 @@
 # enabled so an approval is invalidated if the head advances after this gate
 # verified the clean status (the gh CLI cannot pin an approval to a SHA).
 #
-# It triggers only on the things that change its decision: agentic-review/clean
-# is set via the Status API, which fires the `status` event (not check_run), and
-# the needs-human label change fires `pull_request` labeled/unlabeled. Thread
-# resolution does not affect the gate's decision (it is a separate branch-
-# protection requirement), so it is not a trigger here.
+# It triggers on `workflow_run` when "Agentic Review" completes. The review sets
+# the clean status and the needs-human label with GITHUB_TOKEN, and GitHub does
+# not start workflows from GITHUB_TOKEN-generated events, so triggering on the
+# `status` or label events directly would never fire. workflow_run also runs in
+# the trusted default-branch context, never from PR-controlled code. Thread
+# resolution is a separate branch-protection requirement, not a trigger here.
 ---
 name: Agentic Gate
 
 "on":
-  status: {}
-  pull_request:
-    types: [labeled, unlabeled]
+  workflow_run:
+    workflows: ["Agentic Review"]
+    types: [completed]
 
-# Keyed per PR number (label events) or per commit SHA (status events) to avoid
-# cross-PR cancellation. The two event types can briefly run concurrently for
-# one PR; that is harmless because a duplicate approval collapses to one.
+# Keyed by the reviewed head SHA, so re-runs for one head collapse and distinct
+# PRs never cancel each other.
 concurrency:
-  group: gate-${{ github.event.pull_request.number || github.event.sha || github.run_id }}
+  group: gate-${{ github.event.workflow_run.head_sha || github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -45,16 +45,17 @@ jobs:
     name: gate
     runs-on: ubuntu-latest
     steps:
-      # Find the open PR this event refers to. review_thread and label events
-      # carry the PR; a status event carries only the commit SHA, so map it to
-      # an open PR.
+      # Find the open PR the completed review ran on. For a same-repo PR the
+      # workflow_run payload carries the PR directly; otherwise map its head SHA
+      # to the open PR. The gate then re-derives from the PR's CURRENT head, so a
+      # PR that advanced past the reviewed SHA fails closed (no clean status yet).
       - name: Resolve PR
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          EVENT_PR: ${{ github.event.pull_request.number }}
-          EVENT_SHA: ${{ github.event.sha }}
+          EVENT_PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           if [ -n "$EVENT_PR" ]; then

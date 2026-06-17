@@ -10,12 +10,13 @@
 # Untrusted PR text (title, body) is passed via env, never interpolated into a
 # run script, to avoid script injection.
 #
-# The two jobs share an identical prepare sequence (checkout, key check, sandbox
-# deps, skills, compute merge base, render brief) so both agents review the SAME
-# brief, then each runs its agent through openai/codex-action (pinned). The
-# action installs Codex, holds the API key in a local proxy the agent process
-# never sees, and drops sudo before running. Keep the shared steps in sync; a
-# later shared-harness extraction (architecture section 7) will dedupe repos.
+# Both jobs run their agent through openai/codex-action (pinned): it installs
+# Codex, holds the API key in a local proxy the agent process never sees, and
+# drops sudo before running. The pr-reviewer additionally fetches its prior
+# threads first and renders a reconcile brief, then executes the agent's
+# verdicts. The escalation judge runs only when needs-human is not already set
+# (see the preflight job). A later shared-harness extraction (architecture
+# section 7) will dedupe the common prepare steps across repos.
 ---
 name: Agentic Review
 
@@ -103,10 +104,20 @@ jobs:
           fi
           echo "merge_base=$MB" >> "$GITHUB_OUTPUT"
 
+      # Fetch the pr-reviewer's prior threads and summary BEFORE the agent runs,
+      # so the brief can ask it to reconcile them and post-comments can execute
+      # its verdicts. Read-only; fails closed on a fetch error.
+      - name: Fetch prior review state
+        if: steps.key.outputs.present == 'true'
+        env:
+          STATE_FILE: ${{ runner.temp }}/state.json
+        run: ./.github/scripts/agentic/fetch-state.sh
+
       - name: Render brief
         if: steps.key.outputs.present == 'true'
         env:
           BASE_SHA: ${{ steps.mb.outputs.merge_base }}
+          STATE_FILE: ${{ runner.temp }}/state.json
         run: |
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/body.txt"
           PR_BODY_FILE="$RUNNER_TEMP/body.txt" \
@@ -129,6 +140,7 @@ jobs:
         if: steps.key.outputs.present == 'true'
         env:
           FINDINGS: ${{ runner.temp }}/findings.json
+          STATE_FILE: ${{ runner.temp }}/state.json
         run: ./.github/scripts/agentic/post-comments.sh
 
       - name: Publish agentic-review/clean status
@@ -144,8 +156,45 @@ jobs:
             -f context=agentic-review/clean \
             -f description="$DESC"
 
+  # needs-human is sticky and human-owned. Once set, re-running the escalation
+  # judge wastes a Codex call and risks a duplicate comment, so gate the whole
+  # job behind this preflight. Fails open (run) on a label read error, since a
+  # missed escalation is worse than one extra run.
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      escalate: ${{ steps.decide.outputs.escalate }}
+    steps:
+      - name: Decide whether to run the escalation judge
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY not configured; escalation judge skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "escalate=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          has="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels \
+                  --jq 'any(.labels[].name; . == "needs-human")' 2>/dev/null || echo unknown)"
+          if [ "$has" = "true" ]; then
+            echo "needs-human already set; escalation judge skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "escalate=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "escalate=true" >> "$GITHUB_OUTPUT"
+          fi
+
   escalation:
     name: escalation-judge
+    needs: preflight
+    if: needs.preflight.outputs.escalate == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
