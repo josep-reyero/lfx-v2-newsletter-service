@@ -89,6 +89,7 @@ func (h *Handler) Routes() http.Handler {
 	// Health endpoints — no auth.
 	mux.HandleFunc("GET /livez", h.Livez)
 	mux.HandleFunc("GET /readyz", h.Readyz)
+	mux.HandleFunc("GET /statusz", h.Statusz)
 
 	// Newsletter CRUD — JWT auth via withAuth().
 	mux.Handle("POST /projects/{project_uid}/newsletters", h.withAuth(http.HandlerFunc(h.CreateNewsletter)))
